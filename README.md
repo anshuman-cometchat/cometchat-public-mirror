@@ -68,7 +68,7 @@ For account, billing, or integration questions, consult our [documentation](http
 
 ## Security
 
-To report a security vulnerability, please follow the process in [SECURITY.md](SECURITY.md). Please do not open a public issue for security reports.
+To report a security vulnerability, email security@cometchat.com. Please do not open a public issue for security reports.
 
 ## License
 

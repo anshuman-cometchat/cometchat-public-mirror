@@ -20,5 +20,5 @@ contact_links:
     about: Chat with the CometChat team from your dashboard.
 
   - name: Report a security vulnerability
-    url: https://github.com/cometchat/cometchat-uikit-flutter/blob/v6/SECURITY.md
+    url: mailto:security@cometchat.com
     about: Email security@cometchat.com. Please do not open a public issue for security reports.
