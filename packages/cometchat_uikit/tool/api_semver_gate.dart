@@ -39,8 +39,37 @@ void main(List<String> args) {
     }
   }
 
-  final root = (report['report'] as Map<String, dynamic>)['breakingChanges'];
-  walk(root as Map<String, dynamic>, '');
+  // dart-apitool omits `breakingChanges` when there is nothing to report and sets
+  // `noChangesDetected` instead. This used to cast the absent key straight to a Map:
+  //
+  //     type 'Null' is not a subtype of type 'Map<String, dynamic>' in type cast
+  //     #0  main (tool/api_semver_gate.dart:43:13)
+  //
+  // so the gate CRASHED, with exit 255, exactly when the API was clean — the one
+  // outcome it exists to confirm. An absent key is not treated as "no changes" on its
+  // own, though: that would turn a crash into a gate that silently passes everything
+  // if the report schema ever changes. Only the explicit flag is trusted.
+  final body = report['report'];
+  if (body is! Map<String, dynamic>) {
+    stderr.writeln(
+      'api_semver_gate: the report has no "report" object. dart-apitool wrote:\n'
+      '${const JsonEncoder.withIndent('  ').convert(report)}',
+    );
+    exit(2);
+  }
+  final noChanges = body['noChangesDetected'] == true;
+  final breaking = body['breakingChanges'];
+  if (breaking == null && !noChanges) {
+    stderr.writeln(
+      'api_semver_gate: no "breakingChanges" and no "noChangesDetected" flag — the '
+      'dart-apitool report schema is not what this gate expects, so it cannot tell '
+      '"clean" from "unreadable". Refusing to pass. Report keys: ${body.keys.toList()}',
+    );
+    exit(2);
+  }
+  if (breaking != null) {
+    walk(breaking as Map<String, dynamic>, '');
+  }
 
   final used = <String>{};
   final blocking = <_Change>[];
@@ -53,7 +82,7 @@ void main(List<String> args) {
   }
   final stale = waivers.keys.where((k) => !used.contains(k)).toList();
 
-  final version = report['version'] as Map<String, dynamic>;
+  final version = report['version'] as Map<String, dynamic>? ?? const {};
   final out = StringBuffer()
     ..writeln('## API semver gate')
     ..writeln()
@@ -63,6 +92,20 @@ void main(List<String> args) {
       '${blocking.length} not waived. dart-apitool alone would ask for '
       '${version['needed']}.',
     );
+
+  // Say so when there is nothing to compare against. Once a version is published,
+  // the local pubspec and pub.dev's latest are the same string and the diff is the
+  // package against itself — a green gate then means "nothing was compared", not
+  // "nothing broke". Without this line that reads like a pass.
+  if (version['old'] != null && version['old'] == version['new']) {
+    out
+      ..writeln()
+      ..writeln(
+        '> Note: ${version['new']} is already the latest on pub.dev, so this '
+        'compared the package against itself and cannot detect anything. Bump '
+        '`version:` in pubspec.yaml for a meaningful comparison.',
+      );
+  }
   if (blocking.isNotEmpty) {
     out
       ..writeln()
@@ -78,6 +121,33 @@ void main(List<String> args) {
       );
     }
   }
+  // TODO(human): decide whether stale waivers should FAIL this gate.
+  //
+  // A waiver is stale when nothing in the report matches it. Right now all five in
+  // tool/api/semver_waivers.txt are stale, because 6.2.0 reached pub.dev and the
+  // changes they covered are no longer "changes" — which is exactly when that file's
+  // own instruction applies: "Delete a line once the release it covers is on pub.dev".
+  //
+  // The case for failing: a stale waiver is a loaded gun. Its key is
+  // `<code>|<exact description>`, so a future real breaking change that happens to
+  // produce the same description would be waived silently by a line nobody reviewed
+  // for it. Failing forces the cleanup the file asks for.
+  //
+  // The case against: it fails the build for something that is not a regression, and
+  // it fires on every release immediately after publishing — the moment the waivers
+  // for that release legitimately go stale. That is a predictable red build on a
+  // cadence, which tends to get ignored or bypassed.
+  //
+  // Read at runtime rather than declared const, so the choice can be tried in CI
+  // without editing this file — and so the analyzer does not flag the branch below
+  // as dead code, which this very gate's sibling lint would block on.
+  //
+  //   API_SEMVER_STALE_WAIVERS_BLOCK=1 dart run tool/api_semver_gate.dart <report>
+  //
+  // To make blocking the default, change the comparison to != '0'.
+  final staleWaiversBlock =
+      Platform.environment['API_SEMVER_STALE_WAIVERS_BLOCK'] == '1';
+
   if (stale.isNotEmpty) {
     out
       ..writeln()
@@ -92,7 +162,8 @@ void main(List<String> args) {
   if (summary != null && summary.isNotEmpty) {
     File(summary).writeAsStringSync(out.toString(), mode: FileMode.append);
   }
-  exit(blocking.isEmpty ? 0 : 1);
+  final failing = blocking.isNotEmpty || (staleWaiversBlock && stale.isNotEmpty);
+  exit(failing ? 1 : 0);
 }
 
 /// Waiver key → reason. A key is `<code>|<description>`.
